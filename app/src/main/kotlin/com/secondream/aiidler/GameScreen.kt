@@ -3,20 +3,20 @@ package com.secondream.aiidler
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -34,37 +34,37 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
-import kotlin.math.cos
-import kotlin.math.min
-import kotlin.math.sin
-import kotlin.math.PI
+import kotlin.math.ln
 
-private val CoreBlue = Color(0xFF4A9EFF)
-private val Amber = Color(0xFFD9A85C)
-private val Green = Color(0xFF00FF88)
-private val BgColor = Color(0xFF0B0B0D)
-private val Panel = Color(0xFF16161A)
-private val CardBg = Color(0xFF1C1C22)
-private const val CORE_Y_FRACTION = 0.40f
+private val BgTop = Color(0xFF1C3F77)
+private val BgBottom = Color(0xFF0B1C39)
+private val CardBg = Color(0xFFEFF4FC)
+private val CardText = Color(0xFF12203A)
+private val CardSub = Color(0xFF5A6B86)
+private val Buy = Color(0xFF2FB14C)
+private val BuyOff = Color(0xFF8A93A3)
+private val Gold = Color(0xFFF2C14E)
+private val NavBg = Color(0xFF0A1730)
+private val NavActive = Color(0xFF6D3BD1)
+private val Pill = Color(0x4D000000)
+private val CardBg2 = Color(0xFF14264A)
+
+private enum class Tab { HARDWARE, COMPANY }
 
 @Composable
 fun GameScreen(
     gameLogic: GameLogic,
     audioManager: AudioManager,
     hapticManager: HapticManager,
-    offlineGain: Long,
+    offlineGain: Double,
     startOnboarding: Boolean,
     onSave: () -> Unit,
     onFinishOnboarding: () -> Unit,
@@ -74,36 +74,25 @@ fun GameScreen(
     val gameState by gameLogic.gameState.collectAsState()
     val scope = rememberCoroutineScope()
 
-    var particles by remember { mutableStateOf(listOf<Particle>()) }
-    var rings by remember { mutableStateOf(listOf<Ring>()) }
-    var tick by remember { mutableStateOf(0L) }
-    var breakthroughTime by remember { mutableStateOf(0L) }
-    var canvasSize by remember { mutableStateOf(IntSize.Zero) }
-    val coreScale = remember { Animatable(1f) }
-
+    var tab by remember { mutableStateOf(Tab.HARDWARE) }
     var showOnboarding by remember { mutableStateOf(startOnboarding) }
     var showSettings by remember { mutableStateOf(false) }
     var showConfirmReset by remember { mutableStateOf(false) }
-    var showOffline by remember { mutableStateOf(offlineGain > 0L) }
+    var showOffline by remember { mutableStateOf(offlineGain > 0.0) }
     var soundOn by remember { mutableStateOf(audioManager.enabled) }
     var hapticsOn by remember { mutableStateOf(hapticManager.enabled) }
 
-    // ~60fps loop: particle/ring physics + idle income accrual
+    // Idle income loop
     LaunchedEffect(Unit) {
         var last = System.currentTimeMillis()
         while (true) {
-            kotlinx.coroutines.delay(16)
+            kotlinx.coroutines.delay(200)
             val now = System.currentTimeMillis()
-            val dt = (now - last).coerceAtMost(64L).toFloat()
+            gameLogic.accrue((now - last) / 1000.0)
             last = now
-            particles = particles.mapNotNull { it.advance(dt) }
-            rings = rings.mapNotNull { it.advance(dt) }
-            gameLogic.accrue(dt / 1000.0)
-            tick = now
         }
     }
-
-    // Autosave every 15s
+    // Autosave
     LaunchedEffect(Unit) {
         while (true) {
             kotlinx.coroutines.delay(15_000)
@@ -111,146 +100,32 @@ fun GameScreen(
         }
     }
 
-    fun handleTap() {
-        if (showOnboarding || showSettings || showOffline || showConfirmReset) return
-        val (_, breakthrough) = gameLogic.tap()
-        val core = Offset(canvasSize.width / 2f, canvasSize.height * CORE_Y_FRACTION)
-
-        audioManager.playTapSound()
-        if (breakthrough) hapticManager.breakthrough() else hapticManager.tap()
-
-        rings = rings + Ring(life = 520f, maxRadius = 190f, color = Amber, width = 4f)
-        particles = particles + spawnBurst(core, 16)
-
-        if (breakthrough) {
-            audioManager.playBreakthroughSound()
-            breakthroughTime = System.currentTimeMillis()
-            rings = rings + Ring(life = 900f, maxRadius = 540f, color = Amber, width = 8f)
-            particles = particles + spawnBurst(core, 34)
-        }
-
-        scope.launch {
-            coreScale.snapTo(0.84f)
-            coreScale.animateTo(
-                1f,
-                spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow)
-            )
-        }
-    }
-
-    Box(modifier = Modifier.fillMaxSize().background(BgColor)) {
-        Canvas(
-            modifier = Modifier
-                .fillMaxSize()
-                .onSizeChanged { canvasSize = it }
-                .pointerInput(Unit) { detectTapGestures(onTap = { handleTap() }) }
-        ) {
-            val w = size.width
-            val h = size.height
-            val core = Offset(w / 2f, h * CORE_Y_FRACTION)
-            val frame = tick
-
-            drawRect(BgColor)
-
-            val spacing = 90f
-            val cols = (w / spacing).toInt() + 1
-            val rows = (h / spacing).toInt() + 1
-            val t = frame / 1000f
-            for (cx in 0..cols) {
-                for (cy in 0..rows) {
-                    val a = (sin(t + cx * 0.5f + cy * 0.5f) * 0.5f + 0.5f) * 0.12f
-                    drawCircle(CoreBlue.copy(alpha = a), radius = 1.6f, center = Offset(cx * spacing, cy * spacing))
-                }
-            }
-
-            val pulse = sin(frame / 600.0).toFloat() * 4f
-            val baseR = 46f + min(gameState.level - 1, 10) * 1.5f
-            val coreRadius = (baseR + pulse) * coreScale.value
-
-            val farm = min(gameState.upgrades["gpu_farm"]?.owned ?: 0, 16)
-            if (farm > 0) {
-                val orbitR = baseR + 82f
-                val rot = frame / 2600f
-                for (i in 0 until farm) {
-                    val ang = (i.toFloat() / farm) * (2f * PI.toFloat()) + rot
-                    val nx = core.x + cos(ang) * orbitR
-                    val ny = core.y + sin(ang) * orbitR
-                    drawCircle(Green.copy(alpha = 0.22f), radius = 10f, center = Offset(nx, ny))
-                    drawCircle(Green, radius = 4f, center = Offset(nx, ny))
-                }
-            }
-
-            rings.forEach { r ->
-                drawCircle(r.color.copy(alpha = r.alpha * 0.8f), radius = r.radius, center = core, style = Stroke(width = r.width))
-            }
-
-            drawCircle(CoreBlue.copy(alpha = 0.10f), radius = coreRadius * 2.4f, center = core)
-            drawCircle(CoreBlue.copy(alpha = 0.16f), radius = coreRadius * 1.7f, center = core)
-            drawCircle(CoreBlue, radius = coreRadius, center = core)
-            drawCircle(Amber.copy(alpha = 0.9f), radius = coreRadius, center = core, style = Stroke(width = 3f))
-            drawCircle(
-                Color.White.copy(alpha = 0.85f),
-                radius = coreRadius * 0.30f,
-                center = Offset(core.x - coreRadius * 0.18f, core.y - coreRadius * 0.18f)
-            )
-
-            particles.forEach { p ->
-                drawCircle(p.color.copy(alpha = p.alpha), radius = p.radius, center = Offset(p.x, p.y))
-            }
-
-            val bt = frame - breakthroughTime
-            if (breakthroughTime > 0L && bt < 600L) {
-                val k = 1f - (bt / 600f)
-                val brush = Brush.radialGradient(
-                    colors = listOf(Color.Transparent, Amber.copy(alpha = 0.22f * k)),
-                    center = core,
-                    radius = maxOf(w, h)
-                )
-                drawRect(brush)
-            }
-        }
-
-        // HUD
-        Column(
-            modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter).padding(top = 16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text("LEVEL ${gameState.level}", color = Amber, fontSize = 30.sp, fontFamily = Rajdhani, fontWeight = FontWeight.Bold)
-            Text("${formatNumber(gameState.gpu)} GPU", color = CoreBlue, fontSize = 24.sp, fontFamily = Rajdhani, fontWeight = FontWeight.SemiBold)
-            Text("${formatNumber(gameState.incomePerSec)}/sec", color = Color(0xFF7A7A82), fontSize = 14.sp, fontFamily = Rajdhani)
-            Text("prossimo livello: ${formatNumber(gameState.levelTarget)}", color = Color(0xFF5A5A62), fontSize = 12.sp, fontFamily = Rajdhani)
-            if (gameState.prestige > 0) {
-                Text(
-                    "PRESTIGE ×${gameState.prestige}  (+${(gameState.prestige * 25)}%)",
-                    color = Green, fontSize = 13.sp, fontFamily = Rajdhani, fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(top = 2.dp)
-                )
-            }
-        }
-
-        // Menu button
+    Box(modifier = Modifier.fillMaxSize()) {
         Box(
             modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(top = 16.dp, end = 16.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(Color(0x33FFFFFF))
-                .clickable { showSettings = true }
-                .padding(horizontal = 14.dp, vertical = 8.dp)
-        ) {
-            Text("MENU", color = Color.White, fontSize = 13.sp, fontFamily = Rajdhani, fontWeight = FontWeight.SemiBold)
-        }
-
-        UpgradesPanel(
-            gameState = gameState,
-            gameLogic = gameLogic,
-            audioManager = audioManager,
-            modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                .fillMaxSize()
+                .background(Brush.verticalGradient(listOf(BgTop, BgBottom)))
         )
 
-        if (showOffline) {
-            OfflineOverlay(gain = offlineGain) { showOffline = false }
+        Column(modifier = Modifier.fillMaxSize()) {
+            TopBar(
+                cash = gameState.cash,
+                incomePerSec = gameState.incomePerSec,
+                stageName = gameState.stage.name,
+                onMenu = { showSettings = true }
+            )
+
+            Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                when (tab) {
+                    Tab.HARDWARE -> HardwareTab(gameState, gameLogic, audioManager)
+                    Tab.COMPANY -> CompanyTab(gameState, gameLogic, audioManager, hapticManager, scope)
+                }
+            }
+
+            BottomNav(tab = tab, onTab = { tab = it })
         }
+
+        if (showOffline) OfflineOverlay(gain = offlineGain) { showOffline = false }
 
         if (showOnboarding) {
             OnboardingOverlay {
@@ -263,12 +138,13 @@ fun GameScreen(
             SettingsOverlay(
                 soundOn = soundOn,
                 hapticsOn = hapticsOn,
-                canPrestige = gameState.canPrestige,
-                prestige = gameState.prestige,
+                canIpo = gameState.canIpo,
+                ipoShares = gameLogic.ipoShares(),
+                shares = gameState.shares,
                 onSound = { soundOn = it; audioManager.enabled = it; onToggleSound(it) },
                 onHaptics = { hapticsOn = it; hapticManager.enabled = it; onToggleHaptics(it) },
-                onPrestige = {
-                    if (gameLogic.prestige()) {
+                onIpo = {
+                    if (gameLogic.ipo()) {
                         audioManager.playBreakthroughSound()
                         onSave()
                         showSettings = false
@@ -294,62 +170,240 @@ fun GameScreen(
 }
 
 @Composable
-private fun UpgradesPanel(
-    gameState: GameState,
-    gameLogic: GameLogic,
-    audioManager: AudioManager,
-    modifier: Modifier = Modifier
-) {
-    val scroll = rememberScrollState()
-    Column(
-        modifier = modifier.background(Panel).padding(horizontal = 14.dp, vertical = 14.dp)
-    ) {
-        Text(
-            "UPGRADES", color = Amber, fontSize = 13.sp, fontFamily = Rajdhani, fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(start = 4.dp, bottom = 8.dp)
-        )
-        Column(modifier = Modifier.heightIn(max = 300.dp).verticalScroll(scroll)) {
-            gameState.upgrades.forEach { (id, up) ->
-                val cost = gameLogic.getUpgradeCost(id)
-                UpgradeRow(
-                    name = up.name,
-                    owned = up.owned,
-                    cost = cost,
-                    canAfford = gameState.gpu >= cost,
-                    onBuy = { if (gameLogic.buyUpgrade(id)) audioManager.playUpgradeSound() }
-                )
+private fun TopBar(cash: Double, incomePerSec: Double, stageName: String, onMenu: () -> Unit) {
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Pill)
+                    .padding(horizontal = 16.dp, vertical = 10.dp)
+            ) {
+                Text("\uD83D\uDCB5  \$${formatNumber(cash)}", color = Color.White, fontSize = 22.sp, fontFamily = Rajdhani, fontWeight = FontWeight.Bold)
+            }
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Pill)
+                    .clickable { onMenu() }
+                    .padding(horizontal = 14.dp, vertical = 10.dp)
+            ) {
+                Text("MENU", color = Color.White, fontSize = 13.sp, fontFamily = Rajdhani, fontWeight = FontWeight.SemiBold)
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Pill)
+                    .padding(horizontal = 12.dp, vertical = 7.dp)
+            ) {
+                Text("\u26A1 \$${formatNumber(incomePerSec)}/sec", color = Gold, fontSize = 14.sp, fontFamily = Rajdhani, fontWeight = FontWeight.SemiBold)
+            }
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Pill)
+                    .padding(horizontal = 12.dp, vertical = 7.dp)
+            ) {
+                Text("\uD83C\uDFE2 $stageName", color = Color(0xFFB8C9E6), fontSize = 14.sp, fontFamily = Rajdhani, fontWeight = FontWeight.SemiBold)
             }
         }
     }
 }
 
 @Composable
-private fun UpgradeRow(
-    name: String,
-    owned: Int,
-    cost: Long,
+private fun HardwareTab(gameState: GameState, gameLogic: GameLogic, audioManager: AudioManager) {
+    val scroll = rememberScrollState()
+    Column(
+        modifier = Modifier.fillMaxSize().verticalScroll(scroll).padding(horizontal = 12.dp, vertical = 6.dp)
+    ) {
+        gameState.generators.forEach { g ->
+            GeneratorCard(
+                generator = g,
+                rate = g.rate(gameState.globalMult),
+                cost = g.cost(),
+                canAfford = gameState.cash >= g.cost(),
+                onBuy = { if (gameLogic.buy(g.id)) audioManager.playUpgradeSound() }
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+    }
+}
+
+@Composable
+private fun GeneratorCard(
+    generator: Generator,
+    rate: Double,
+    cost: Double,
     canAfford: Boolean,
     onBuy: () -> Unit
 ) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 5.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .background(if (canAfford) CoreBlue else Color(0xFF26262B))
-            .clickable(enabled = canAfford) { onBuy() }
-            .padding(horizontal = 18.dp, vertical = 14.dp)
+            .padding(vertical = 6.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(CardBg)
+            .padding(14.dp)
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column {
-                Text(name, color = if (canAfford) Color.White else Color(0xFF8A8A90), fontSize = 16.sp, fontFamily = Rajdhani, fontWeight = FontWeight.SemiBold, maxLines = 1)
-                Text("posseduti: $owned", color = if (canAfford) Color(0xFFE2ECFF) else Color(0xFF6A6A70), fontSize = 12.sp, fontFamily = Rajdhani, maxLines = 1)
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(54.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color(0xFFDCE6F5)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(generator.icon, fontSize = 28.sp)
             }
-            Text(formatNumber(cost), color = if (canAfford) Color.White else Color(0xFF8A8A90), fontSize = 16.sp, fontFamily = Rajdhani, fontWeight = FontWeight.Bold, maxLines = 1)
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(generator.name, color = CardText, fontSize = 17.sp, fontFamily = Rajdhani, fontWeight = FontWeight.Bold, maxLines = 1)
+                    Spacer(Modifier.width(8.dp))
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0xFF2A4DA0))
+                            .padding(horizontal = 8.dp, vertical = 2.dp)
+                    ) {
+                        Text("×${generator.count}", color = Color.White, fontSize = 12.sp, fontFamily = Rajdhani, fontWeight = FontWeight.Bold)
+                    }
+                }
+                Text("\$${formatNumber(rate)}/sec", color = CardSub, fontSize = 13.sp, fontFamily = Rajdhani, maxLines = 1)
+            }
+            Spacer(Modifier.width(10.dp))
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(if (canAfford) Buy else BuyOff)
+                    .clickable(enabled = canAfford) { onBuy() }
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
+            ) {
+                Text("\$${formatNumber(cost)}", color = Color.White, fontSize = 15.sp, fontFamily = Rajdhani, fontWeight = FontWeight.Bold, maxLines = 1)
+            }
+        }
+    }
+}
+
+@Composable
+private fun CompanyTab(
+    gameState: GameState,
+    gameLogic: GameLogic,
+    audioManager: AudioManager,
+    hapticManager: HapticManager,
+    scope: kotlinx.coroutines.CoroutineScope
+) {
+    val btnScale = remember { Animatable(1f) }
+
+    Column(
+        modifier = Modifier.fillMaxSize().padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text(gameState.stage.name.uppercase(), color = Gold, fontSize = 30.sp, fontFamily = Rajdhani, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+        Spacer(Modifier.height(6.dp))
+        Text("valutazione \$${formatNumber(gameState.valuation)}", color = Color(0xFFB8C9E6), fontSize = 15.sp, fontFamily = Rajdhani)
+        Spacer(Modifier.height(16.dp))
+
+        // Progress to next stage (log scale)
+        val next = gameState.nextStage
+        if (next != null) {
+            val cur = gameState.stage.threshold.coerceAtLeast(1.0)
+            val v = gameState.valuation.coerceAtLeast(1.0)
+            val frac = ((ln(v) - ln(cur)) / (ln(next.threshold) - ln(cur))).toFloat().coerceIn(0f, 1f)
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(14.dp)
+                    .clip(RoundedCornerShape(7.dp))
+                    .background(Color(0x33FFFFFF))
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(frac)
+                        .fillMaxHeight()
+                        .clip(RoundedCornerShape(7.dp))
+                        .background(Gold)
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            Text("prossimo: ${next.name}  (\$${formatNumber(next.threshold)})", color = Color(0xFF8FA6C8), fontSize = 12.sp, fontFamily = Rajdhani)
+        } else {
+            Text("Hai raggiunto il vertice del settore.", color = Gold, fontSize = 14.sp, fontFamily = Rajdhani)
+        }
+
+        if (gameState.shares > 0) {
+            Spacer(Modifier.height(10.dp))
+            Text("AZIONI IPO ×${gameState.shares}  (+${gameState.shares * 10}%)", color = Color(0xFF2FB14C), fontSize = 14.sp, fontFamily = Rajdhani, fontWeight = FontWeight.SemiBold)
+        }
+
+        Spacer(Modifier.height(40.dp))
+
+        // Manual train button
+        Box(
+            modifier = Modifier
+                .scale(btnScale.value)
+                .size(200.dp)
+                .clip(RoundedCornerShape(100.dp))
+                .background(Brush.verticalGradient(listOf(Color(0xFF4A9EFF), Color(0xFF2A5DC0))))
+                .clickable {
+                    val gain = gameLogic.tapWork()
+                    audioManager.playTapSound()
+                    hapticManager.tap()
+                    scope.launch {
+                        btnScale.snapTo(0.9f)
+                        btnScale.animateTo(1f, spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow))
+                    }
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("\uD83E\uDDE0", fontSize = 48.sp)
+                Spacer(Modifier.height(4.dp))
+                Text("ALLENA", color = Color.White, fontSize = 18.sp, fontFamily = Rajdhani, fontWeight = FontWeight.Bold)
+            }
+        }
+        Spacer(Modifier.height(16.dp))
+        Text("+\$${formatNumber(gameState.tapValue())} per tap", color = Color(0xFFB8C9E6), fontSize = 14.sp, fontFamily = Rajdhani)
+    }
+}
+
+@Composable
+private fun BottomNav(tab: Tab, onTab: (Tab) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(NavBg)
+            .padding(horizontal = 8.dp, vertical = 8.dp)
+    ) {
+        NavItem("\uD83D\uDDA5\uFE0F", "HARDWARE", tab == Tab.HARDWARE) { onTab(Tab.HARDWARE) }
+        NavItem("\uD83C\uDFE2", "AZIENDA", tab == Tab.COMPANY) { onTab(Tab.COMPANY) }
+    }
+}
+
+@Composable
+private fun RowScope.NavItem(icon: String, label: String, active: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .weight(1f)
+            .padding(horizontal = 6.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(if (active) NavActive else Color.Transparent)
+            .clickable { onClick() }
+            .padding(vertical = 10.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(icon, fontSize = 22.sp)
+            Spacer(Modifier.height(2.dp))
+            Text(label, color = if (active) Color.White else Color(0xFF8FA6C8), fontSize = 12.sp, fontFamily = Rajdhani, fontWeight = FontWeight.SemiBold)
         }
     }
 }
@@ -359,14 +413,13 @@ private fun Scrim(content: @Composable () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xCC000000))
-            .pointerInput(Unit) { detectTapGestures {} },
+            .background(Color(0xCC000000)),
         contentAlignment = Alignment.Center
     ) { content() }
 }
 
 @Composable
-private fun PrimaryButton(text: String, enabled: Boolean = true, color: Color = CoreBlue, onClick: () -> Unit) {
+private fun PrimaryButton(text: String, enabled: Boolean = true, color: Color = Color(0xFF4A9EFF), onClick: () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -383,47 +436,45 @@ private fun PrimaryButton(text: String, enabled: Boolean = true, color: Color = 
 @Composable
 private fun OnboardingOverlay(onStart: () -> Unit) {
     Scrim {
-        Box(
+        Column(
             modifier = Modifier
-                .padding(28.dp)
+                .width(320.dp)
                 .clip(RoundedCornerShape(20.dp))
-                .background(CardBg)
-                .padding(24.dp)
+                .background(CardBg2)
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("SINGULARITY", color = Amber, fontSize = 26.sp, fontFamily = Rajdhani, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(16.dp))
-                Text("Tocca il core per generare GPU.", color = Color.White, fontSize = 15.sp, fontFamily = Rajdhani, textAlign = TextAlign.Center)
-                Spacer(Modifier.height(8.dp))
-                Text("Compra potenziamenti per moltiplicare i guadagni.", color = Color.White, fontSize = 15.sp, fontFamily = Rajdhani, textAlign = TextAlign.Center)
-                Spacer(Modifier.height(8.dp))
-                Text("I Worker Bot lavorano per te: guadagni anche da spento, fino a 2 ore.", color = Color(0xFFB8C4D8), fontSize = 14.sp, fontFamily = Rajdhani, textAlign = TextAlign.Center)
-                Spacer(Modifier.height(22.dp))
-                PrimaryButton("INIZIA", color = Amber, onClick = onStart)
-            }
+            Text("AI IDLER", color = Gold, fontSize = 28.sp, fontFamily = Rajdhani, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(16.dp))
+            Text("Parti dalla cameretta con uno smartphone.", color = Color.White, fontSize = 15.sp, fontFamily = Rajdhani, textAlign = TextAlign.Center)
+            Spacer(Modifier.height(8.dp))
+            Text("Allena modelli, guadagna, compra hardware: laptop, GPU, server, data center.", color = Color.White, fontSize = 15.sp, fontFamily = Rajdhani, textAlign = TextAlign.Center)
+            Spacer(Modifier.height(8.dp))
+            Text("Fai crescere la tua compagnia fino a sfidare OpenAI e Anthropic. I tuoi impianti guadagnano anche da spento, fino a 2 ore.", color = Color(0xFFB8C9E6), fontSize = 14.sp, fontFamily = Rajdhani, textAlign = TextAlign.Center)
+            Spacer(Modifier.height(22.dp))
+            PrimaryButton("INIZIA", color = Gold, onClick = onStart)
         }
     }
 }
 
 @Composable
-private fun OfflineOverlay(gain: Long, onCollect: () -> Unit) {
+private fun OfflineOverlay(gain: Double, onCollect: () -> Unit) {
     Scrim {
-        Box(
+        Column(
             modifier = Modifier
-                .padding(28.dp)
+                .width(320.dp)
                 .clip(RoundedCornerShape(20.dp))
-                .background(CardBg)
-                .padding(24.dp)
+                .background(CardBg2)
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("BENTORNATO", color = Green, fontSize = 22.sp, fontFamily = Rajdhani, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(14.dp))
-                Text("Mentre eri via i tuoi bot hanno prodotto", color = Color(0xFFB8C4D8), fontSize = 14.sp, fontFamily = Rajdhani, textAlign = TextAlign.Center)
-                Spacer(Modifier.height(6.dp))
-                Text("+${formatNumber(gain)} GPU", color = CoreBlue, fontSize = 28.sp, fontFamily = Rajdhani, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(22.dp))
-                PrimaryButton("INCASSA", color = Green, onClick = onCollect)
-            }
+            Text("BENTORNATO", color = Color(0xFF2FB14C), fontSize = 22.sp, fontFamily = Rajdhani, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(14.dp))
+            Text("Mentre eri via i tuoi impianti hanno prodotto", color = Color(0xFFB8C9E6), fontSize = 14.sp, fontFamily = Rajdhani, textAlign = TextAlign.Center)
+            Spacer(Modifier.height(6.dp))
+            Text("+\$${formatNumber(gain)}", color = Color(0xFF4A9EFF), fontSize = 28.sp, fontFamily = Rajdhani, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(22.dp))
+            PrimaryButton("INCASSA", color = Color(0xFF2FB14C), onClick = onCollect)
         }
     }
 }
@@ -432,50 +483,46 @@ private fun OfflineOverlay(gain: Long, onCollect: () -> Unit) {
 private fun SettingsOverlay(
     soundOn: Boolean,
     hapticsOn: Boolean,
-    canPrestige: Boolean,
-    prestige: Int,
+    canIpo: Boolean,
+    ipoShares: Int,
+    shares: Int,
     onSound: (Boolean) -> Unit,
     onHaptics: (Boolean) -> Unit,
-    onPrestige: () -> Unit,
+    onIpo: () -> Unit,
     onResetRequest: () -> Unit,
     onClose: () -> Unit
 ) {
     Scrim {
-        Box(
+        Column(
             modifier = Modifier
-                .padding(24.dp)
+                .width(320.dp)
                 .clip(RoundedCornerShape(20.dp))
-                .background(CardBg)
+                .background(CardBg2)
                 .padding(24.dp)
         ) {
-            Column {
-                Text("OPZIONI", color = Amber, fontSize = 22.sp, fontFamily = Rajdhani, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(18.dp))
-                ToggleRow("Suono", soundOn, onSound)
-                Spacer(Modifier.height(10.dp))
-                ToggleRow("Vibrazione", hapticsOn, onHaptics)
-                Spacer(Modifier.height(20.dp))
-                Text(
-                    "RESET SINGULARITY",
-                    color = Color(0xFFB8C4D8), fontSize = 12.sp, fontFamily = Rajdhani, fontWeight = FontWeight.SemiBold
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "Azzera la run, +25% guadagni permanenti. Serve 1M GPU.",
-                    color = Color(0xFF7A7A82), fontSize = 12.sp, fontFamily = Rajdhani
-                )
-                Spacer(Modifier.height(8.dp))
-                PrimaryButton(
-                    if (canPrestige) "RESET (+25%)" else "RESET BLOCCATO",
-                    enabled = canPrestige,
-                    color = Green,
-                    onClick = onPrestige
-                )
-                Spacer(Modifier.height(18.dp))
-                PrimaryButton("AZZERA PROGRESSI", color = Color(0xFF8A3030), onClick = onResetRequest)
-                Spacer(Modifier.height(10.dp))
-                PrimaryButton("CHIUDI", color = Color(0xFF33333A), onClick = onClose)
-            }
+            Text("OPZIONI", color = Gold, fontSize = 22.sp, fontFamily = Rajdhani, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(18.dp))
+            ToggleRow("Suono", soundOn, onSound)
+            Spacer(Modifier.height(10.dp))
+            ToggleRow("Vibrazione", hapticsOn, onHaptics)
+            Spacer(Modifier.height(20.dp))
+            Text("IPO", color = Color(0xFFB8C9E6), fontSize = 12.sp, fontFamily = Rajdhani, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                if (canIpo) "Quota la compagnia: +${ipoShares * 10}% permanente. Azzera la run." else "Serve \$1M di valutazione per quotarti.",
+                color = Color(0xFF8FA6C8), fontSize = 12.sp, fontFamily = Rajdhani
+            )
+            Spacer(Modifier.height(8.dp))
+            PrimaryButton(
+                if (canIpo) "IPO (+${ipoShares * 10}%)" else "IPO BLOCCATA",
+                enabled = canIpo,
+                color = Color(0xFF2FB14C),
+                onClick = onIpo
+            )
+            Spacer(Modifier.height(18.dp))
+            PrimaryButton("AZZERA PROGRESSI", color = Color(0xFF8A3030), onClick = onResetRequest)
+            Spacer(Modifier.height(10.dp))
+            PrimaryButton("CHIUDI", color = Color(0xFF33333A), onClick = onClose)
         }
     }
 }
@@ -483,7 +530,7 @@ private fun SettingsOverlay(
 @Composable
 private fun ToggleRow(label: String, value: Boolean, onChange: (Boolean) -> Unit) {
     Row(
-        modifier = Modifier.fillMaxWidth().width(240.dp),
+        modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -495,90 +542,21 @@ private fun ToggleRow(label: String, value: Boolean, onChange: (Boolean) -> Unit
 @Composable
 private fun ConfirmResetOverlay(onConfirm: () -> Unit, onCancel: () -> Unit) {
     Scrim {
-        Box(
+        Column(
             modifier = Modifier
-                .padding(28.dp)
+                .width(320.dp)
                 .clip(RoundedCornerShape(20.dp))
-                .background(CardBg)
-                .padding(24.dp)
+                .background(CardBg2)
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("SICURO?", color = Color(0xFFE06060), fontSize = 22.sp, fontFamily = Rajdhani, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(12.dp))
-                Text("Cancella tutto, prestige incluso. Non si torna indietro.", color = Color(0xFFB8C4D8), fontSize = 14.sp, fontFamily = Rajdhani, textAlign = TextAlign.Center)
-                Spacer(Modifier.height(20.dp))
-                PrimaryButton("SÌ, AZZERA", color = Color(0xFF8A3030), onClick = onConfirm)
-                Spacer(Modifier.height(10.dp))
-                PrimaryButton("ANNULLA", color = Color(0xFF33333A), onClick = onCancel)
-            }
+            Text("SICURO?", color = Color(0xFFE06060), fontSize = 22.sp, fontFamily = Rajdhani, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(12.dp))
+            Text("Cancella tutto, IPO incluse. Non si torna indietro.", color = Color(0xFFB8C9E6), fontSize = 14.sp, fontFamily = Rajdhani, textAlign = TextAlign.Center)
+            Spacer(Modifier.height(20.dp))
+            PrimaryButton("SÌ, AZZERA", color = Color(0xFF8A3030), onClick = onConfirm)
+            Spacer(Modifier.height(10.dp))
+            PrimaryButton("ANNULLA", color = Color(0xFF33333A), onClick = onCancel)
         }
-    }
-}
-
-private fun spawnBurst(center: Offset, count: Int): List<Particle> {
-    return List(count) { i ->
-        val angle = (i.toFloat() / count) * (2f * PI.toFloat()) + (Math.random().toFloat() * 0.3f)
-        val speed = 0.18f + Math.random().toFloat() * 0.22f
-        Particle(
-            x = center.x,
-            y = center.y,
-            vx = cos(angle) * speed,
-            vy = sin(angle) * speed,
-            life = 600f + Math.random().toFloat() * 250f,
-            startSize = 6f + Math.random().toFloat() * 4f,
-            color = when (i % 3) {
-                0 -> Amber
-                1 -> CoreBlue
-                else -> Green
-            }
-        )
-    }
-}
-
-data class Particle(
-    val x: Float,
-    val y: Float,
-    val vx: Float,
-    val vy: Float,
-    val life: Float,
-    val maxLife: Float = life,
-    val startSize: Float,
-    val color: Color
-) {
-    fun advance(dt: Float): Particle? {
-        val nl = life - dt
-        if (nl <= 0f) return null
-        return copy(x = x + vx * dt, y = y + vy * dt, vy = vy + 0.0006f * dt, life = nl)
-    }
-
-    val alpha: Float get() = (life / maxLife).coerceIn(0f, 1f)
-    val radius: Float get() = startSize * alpha
-}
-
-data class Ring(
-    val life: Float,
-    val maxLife: Float = life,
-    val maxRadius: Float,
-    val startRadius: Float = 30f,
-    val color: Color,
-    val width: Float = 4f
-) {
-    fun advance(dt: Float): Ring? {
-        val nl = life - dt
-        if (nl <= 0f) return null
-        return copy(life = nl)
-    }
-
-    val progress: Float get() = (1f - (life / maxLife)).coerceIn(0f, 1f)
-    val radius: Float get() = startRadius + (maxRadius - startRadius) * progress
-    val alpha: Float get() = (1f - progress).coerceIn(0f, 1f)
-}
-
-fun formatNumber(value: Long): String {
-    return when {
-        value >= 1_000_000_000 -> "%.2fB".format(value / 1_000_000_000.0)
-        value >= 1_000_000 -> "%.2fM".format(value / 1_000_000.0)
-        value >= 1_000 -> "%.2fK".format(value / 1_000.0)
-        else -> value.toString()
     }
 }

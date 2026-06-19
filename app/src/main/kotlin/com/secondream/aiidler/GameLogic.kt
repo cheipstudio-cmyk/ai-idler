@@ -5,162 +5,172 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlin.math.floor
 import kotlin.math.pow
+import kotlin.math.sqrt
 
-data class UpgradeInfo(
+data class Generator(
     val id: String,
     val name: String,
-    val baseCost: Long,
-    val costMultiplier: Double = 1.15,
-    val owned: Int = 0,
-    val effect: Double = 1.0
-)
+    val icon: String,
+    val baseCost: Double,
+    val baseRate: Double,
+    val costMult: Double = 1.15,
+    val count: Int = 0
+) {
+    fun cost(): Double = baseCost * costMult.pow(count.toDouble())
+    fun rate(globalMult: Double): Double = baseRate * count * globalMult
+}
+
+data class CompanyStage(val name: String, val threshold: Double)
 
 data class GameState(
-    val gpu: Long = 0,
+    val cash: Double = 0.0,
+    val lifetimeEarned: Double = 0.0,
+    val shares: Int = 0,
     val totalTaps: Long = 0,
-    val level: Int = 1,
-    val workers: Int = 0,
-    val multiplier: Double = 1.0,
-    val prestige: Int = 0,
-    val upgrades: Map<String, UpgradeInfo> = defaultUpgrades()
+    val generators: List<Generator> = defaultGenerators()
 ) {
-    val prestigeBonus: Double get() = 1.0 + prestige * 0.25
-    val incomePerSec: Long get() = (workers * 10 * prestigeBonus).toLong()
-    val levelTarget: Long get() = level * 100_000L
-    val canPrestige: Boolean get() = gpu >= PRESTIGE_THRESHOLD
+    val globalMult: Double get() = 1.0 + shares * 0.10
+    val incomePerSec: Double get() = generators.sumOf { it.rate(globalMult) }
+    val valuation: Double get() = lifetimeEarned
+
+    val stageIndex: Int
+        get() {
+            var idx = 0
+            for (i in STAGES.indices) if (valuation >= STAGES[i].threshold) idx = i
+            return idx
+        }
+    val stage: CompanyStage get() = STAGES[stageIndex]
+    val nextStage: CompanyStage? get() = STAGES.getOrNull(stageIndex + 1)
+    val canIpo: Boolean get() = valuation >= IPO_THRESHOLD
+
+    fun tapValue(): Double = (1.0 + 0.5 * generators.sumOf { it.count }) * globalMult
 
     companion object {
-        const val PRESTIGE_THRESHOLD = 1_000_000L
+        const val IPO_THRESHOLD = 1_000_000.0
 
-        fun defaultUpgrades(): Map<String, UpgradeInfo> = mapOf(
-            "gpu_farm" to UpgradeInfo("gpu_farm", "GPU Farm", 10, effect = 1.0),
-            "worker_bot" to UpgradeInfo("worker_bot", "Worker Bot", 50, effect = 1.0),
-            "processing_core" to UpgradeInfo("processing_core", "Processing Core", 150, effect = 1.5),
-            "ai_booster" to UpgradeInfo("ai_booster", "AI Booster", 500, effect = 2.0)
+        val STAGES = listOf(
+            CompanyStage("Cameretta", 0.0),
+            CompanyStage("Indie Dev", 1_000.0),
+            CompanyStage("Startup", 50_000.0),
+            CompanyStage("Startup finanziata", 1_000_000.0),
+            CompanyStage("Scale-up", 50_000_000.0),
+            CompanyStage("Unicorno", 1_000_000_000.0),
+            CompanyStage("Big Lab", 100_000_000_000.0),
+            CompanyStage("Rivale di OpenAI", 10_000_000_000_000.0)
+        )
+
+        fun defaultGenerators(): List<Generator> = listOf(
+            Generator("phone", "Smartphone", "📱", 15.0, 0.1),
+            Generator("laptop", "Laptop", "💻", 120.0, 1.0),
+            Generator("pc", "Gaming PC", "🖥️", 1_300.0, 8.0),
+            Generator("gpu", "GPU Rig", "🎮", 14_000.0, 47.0),
+            Generator("rack", "Server Rack", "🗄️", 200_000.0, 260.0),
+            Generator("datacenter", "Data Center", "🏢", 3_300_000.0, 1_400.0),
+            Generator("cluster", "AI Cluster", "⚡", 55_000_000.0, 7_800.0),
+            Generator("campus", "Hyperscale Campus", "🌐", 1_000_000_000.0, 44_000.0)
         )
     }
 }
 
 class GameLogic {
-    private val _gameState = MutableStateFlow(GameState())
-    val gameState: StateFlow<GameState> = _gameState
+    private val _state = MutableStateFlow(GameState())
+    val gameState: StateFlow<GameState> = _state
 
-    private var fractional = 0.0
-
-    fun tap(): Pair<Long, Boolean> {
-        val s = _gameState.value
-        val farmOwned = s.upgrades["gpu_farm"]?.owned ?: 0
-        val baseGain = 1L + (s.multiplier * farmOwned).toLong()
-        val totalGain = (baseGain * 100 * s.prestigeBonus).toLong()
-
-        val newGpu = s.gpu + totalGain
-        val breakthrough = newGpu > s.levelTarget
-
-        _gameState.value = s.copy(
-            gpu = newGpu,
-            totalTaps = s.totalTaps + 1,
-            level = if (breakthrough) s.level + 1 else s.level,
-            multiplier = if (breakthrough) s.multiplier * 1.1 else s.multiplier
+    fun tapWork(): Double {
+        val s = _state.value
+        val gain = s.tapValue()
+        _state.value = s.copy(
+            cash = s.cash + gain,
+            lifetimeEarned = s.lifetimeEarned + gain,
+            totalTaps = s.totalTaps + 1
         )
-        return Pair(totalGain, breakthrough)
+        return gain
     }
 
-    /** Idle income while the app is open. Call frequently with elapsed seconds. */
     fun accrue(seconds: Double) {
-        val s = _gameState.value
-        if (s.incomePerSec <= 0L) return
-        fractional += s.incomePerSec * seconds
-        val whole = floor(fractional)
-        if (whole >= 1.0) {
-            fractional -= whole
-            _gameState.value = s.copy(gpu = s.gpu + whole.toLong())
-        }
+        val s = _state.value
+        val inc = s.incomePerSec
+        if (inc <= 0.0) return
+        val gain = inc * seconds
+        _state.value = s.copy(cash = s.cash + gain, lifetimeEarned = s.lifetimeEarned + gain)
     }
 
-    fun buyUpgrade(upgradeId: String): Boolean {
-        val s = _gameState.value
-        val up = s.upgrades[upgradeId] ?: return false
-        val cost = getUpgradeCost(upgradeId)
-        if (s.gpu < cost) return false
-
-        val newUpgrades = s.upgrades.toMutableMap()
-        val newUp = up.copy(owned = up.owned + 1)
-        newUpgrades[upgradeId] = newUp
-
-        _gameState.value = s.copy(
-            gpu = s.gpu - cost,
-            upgrades = newUpgrades,
-            multiplier = s.multiplier + newUp.effect * 0.05,
-            workers = if (upgradeId == "worker_bot") s.workers + 1 else s.workers
-        )
+    fun buy(id: String): Boolean {
+        val s = _state.value
+        val idx = s.generators.indexOfFirst { it.id == id }
+        if (idx < 0) return false
+        val g = s.generators[idx]
+        val cost = g.cost()
+        if (s.cash < cost) return false
+        val gens = s.generators.toMutableList()
+        gens[idx] = g.copy(count = g.count + 1)
+        _state.value = s.copy(cash = s.cash - cost, generators = gens)
         return true
     }
 
-    fun getUpgradeCost(upgradeId: String): Long {
-        val up = _gameState.value.upgrades[upgradeId] ?: return 0L
-        return (up.baseCost * up.costMultiplier.pow(up.owned.toDouble())).toLong()
+    fun ipoShares(): Int {
+        val v = _state.value.valuation
+        return floor(sqrt(v / IPO_BASE)).toInt().coerceAtLeast(0)
     }
 
-    /** Prestige: wipe run progress, keep a permanent +25% multiplier per reset. */
-    fun prestige(): Boolean {
-        val s = _gameState.value
-        if (!s.canPrestige) return false
-        fractional = 0.0
-        _gameState.value = GameState(prestige = s.prestige + 1, totalTaps = s.totalTaps)
+    fun ipo(): Boolean {
+        val s = _state.value
+        if (!s.canIpo) return false
+        val gained = ipoShares().coerceAtLeast(1)
+        _state.value = GameState(shares = s.shares + gained, totalTaps = s.totalTaps)
         return true
     }
 
     fun resetAll() {
-        fractional = 0.0
-        _gameState.value = GameState()
+        _state.value = GameState()
     }
 
-    // ---- Persistence (plain SharedPreferences, no serialization deps) ----
+    // ---- Persistence (SharedPreferences; doubles stored as strings) ----
 
     fun saveTo(prefs: SharedPreferences) {
-        val s = _gameState.value
-        prefs.edit()
-            .putLong("gpu", s.gpu)
-            .putLong("totalTaps", s.totalTaps)
-            .putInt("level", s.level)
-            .putInt("workers", s.workers)
-            .putFloat("multiplier", s.multiplier.toFloat())
-            .putInt("prestige", s.prestige)
-            .putInt("u_gpu_farm", s.upgrades["gpu_farm"]?.owned ?: 0)
-            .putInt("u_worker_bot", s.upgrades["worker_bot"]?.owned ?: 0)
-            .putInt("u_processing_core", s.upgrades["processing_core"]?.owned ?: 0)
-            .putInt("u_ai_booster", s.upgrades["ai_booster"]?.owned ?: 0)
-            .putLong("lastSave", System.currentTimeMillis())
-            .apply()
+        val s = _state.value
+        val e = prefs.edit()
+        e.putString("cash", s.cash.toString())
+        e.putString("lifetime", s.lifetimeEarned.toString())
+        e.putInt("shares", s.shares)
+        e.putLong("totalTaps", s.totalTaps)
+        s.generators.forEach { e.putInt("g_${it.id}", it.count) }
+        e.putLong("lastSave", System.currentTimeMillis())
+        e.apply()
     }
 
-    /** Returns offline GPU earned since last save (capped at 2h). */
-    fun loadFrom(prefs: SharedPreferences): Long {
-        if (!prefs.contains("gpu")) return 0L
-
-        val base = GameState.defaultUpgrades()
-        val upgrades = base.mapValues { (id, info) ->
-            info.copy(owned = prefs.getInt("u_$id", 0))
-        }
-
+    /** Returns offline cash earned since last save (capped at 2h). */
+    fun loadFrom(prefs: SharedPreferences): Double {
+        if (!prefs.contains("cash")) return 0.0
+        val gens = GameState.defaultGenerators().map { it.copy(count = prefs.getInt("g_${it.id}", 0)) }
         var s = GameState(
-            gpu = prefs.getLong("gpu", 0),
+            cash = (prefs.getString("cash", "0") ?: "0").toDoubleOrNull() ?: 0.0,
+            lifetimeEarned = (prefs.getString("lifetime", "0") ?: "0").toDoubleOrNull() ?: 0.0,
+            shares = prefs.getInt("shares", 0),
             totalTaps = prefs.getLong("totalTaps", 0),
-            level = prefs.getInt("level", 1),
-            workers = prefs.getInt("workers", 0),
-            multiplier = prefs.getFloat("multiplier", 1f).toDouble(),
-            prestige = prefs.getInt("prestige", 0),
-            upgrades = upgrades
+            generators = gens
         )
-
-        // Offline earnings
         val lastSave = prefs.getLong("lastSave", System.currentTimeMillis())
-        val elapsedSec = ((System.currentTimeMillis() - lastSave) / 1000.0)
-            .coerceIn(0.0, 2 * 60 * 60.0) // cap 2h
-        val offlineGain = (s.incomePerSec * elapsedSec).toLong()
-        if (offlineGain > 0L) s = s.copy(gpu = s.gpu + offlineGain)
-
-        _gameState.value = s
-        return offlineGain
+        val elapsed = ((System.currentTimeMillis() - lastSave) / 1000.0).coerceIn(0.0, 2 * 60 * 60.0)
+        val offline = s.incomePerSec * elapsed
+        if (offline > 0.0) s = s.copy(cash = s.cash + offline, lifetimeEarned = s.lifetimeEarned + offline)
+        _state.value = s
+        return offline
     }
+
+    companion object {
+        private const val IPO_BASE = 1_000_000.0
+    }
+}
+
+fun formatNumber(value: Double): String {
+    if (value < 1000.0) return value.toLong().toString()
+    val units = listOf("K", "M", "B", "T", "Qa", "Qi", "Sx", "Sp", "Oc", "No", "Dc")
+    var v = value
+    var i = -1
+    while (v >= 1000.0 && i < units.size - 1) {
+        v /= 1000.0
+        i++
+    }
+    return "%.2f%s".format(v, units[i])
 }
