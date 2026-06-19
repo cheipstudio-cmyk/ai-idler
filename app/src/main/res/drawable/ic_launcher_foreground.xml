@@ -1,0 +1,28 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Central core -->
+    <path
+        android:fillColor="#4A9EFF"
+        android:pathData="M54,44 m-9,0 a9,9 0,1 1,18 0 a9,9 0,1 1,-18 0" />
+    <!-- Orbiting nodes -->
+    <path
+        android:fillColor="#D9A85C"
+        android:pathData="M36,34 m-5,0 a5,5 0,1 1,10 0 a5,5 0,1 1,-10 0" />
+    <path
+        android:fillColor="#D9A85C"
+        android:pathData="M72,34 m-5,0 a5,5 0,1 1,10 0 a5,5 0,1 1,-10 0" />
+    <path
+        android:fillColor="#00FF88"
+        android:pathData="M36,74 m-5,0 a5,5 0,1 1,10 0 a5,5 0,1 1,-10 0" />
+    <path
+        android:fillColor="#00FF88"
+        android:pathData="M72,74 m-5,0 a5,5 0,1 1,10 0 a5,5 0,1 1,-10 0" />
+    <!-- Connections -->
+    <path
+        android:strokeColor="#4A9EFF"
+        android:strokeWidth="2"
+        android:pathData="M48,38 L40,35 M60,38 L68,35 M48,50 L40,71 M60,50 L68,71" />
+</vector>
