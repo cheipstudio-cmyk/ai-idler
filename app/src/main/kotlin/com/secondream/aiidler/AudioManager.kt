@@ -5,6 +5,7 @@ import android.media.AudioAttributes
 import android.media.SoundPool
 
 class AudioManager(private val context: Context) {
+    var enabled: Boolean = true
     private var tapSound: Int = 0
     private var upgradeSound: Int = 0
     private var breakthroughSound: Int = 0
@@ -32,6 +33,7 @@ class AudioManager(private val context: Context) {
     }
 
     fun playTapSound() {
+        if (!enabled) return
         try {
             soundPool.play(tapSound, 0.6f, 0.6f, 1, 0, 1f)
         } catch (e: Exception) {
@@ -40,6 +42,7 @@ class AudioManager(private val context: Context) {
     }
 
     fun playUpgradeSound() {
+        if (!enabled) return
         try {
             soundPool.play(upgradeSound, 0.85f, 0.85f, 1, 0, 1f)
         } catch (e: Exception) {
@@ -48,6 +51,7 @@ class AudioManager(private val context: Context) {
     }
 
     fun playBreakthroughSound() {
+        if (!enabled) return
         try {
             soundPool.play(breakthroughSound, 1f, 1f, 2, 0, 1f)
         } catch (e: Exception) {

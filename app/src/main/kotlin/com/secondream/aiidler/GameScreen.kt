@@ -11,22 +11,26 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -37,6 +41,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -50,13 +55,21 @@ private val CoreBlue = Color(0xFF4A9EFF)
 private val Amber = Color(0xFFD9A85C)
 private val Green = Color(0xFF00FF88)
 private val BgColor = Color(0xFF0B0B0D)
+private val Panel = Color(0xFF16161A)
+private val CardBg = Color(0xFF1C1C22)
 private const val CORE_Y_FRACTION = 0.40f
 
 @Composable
 fun GameScreen(
     gameLogic: GameLogic,
     audioManager: AudioManager,
-    hapticManager: HapticManager
+    hapticManager: HapticManager,
+    offlineGain: Long,
+    startOnboarding: Boolean,
+    onSave: () -> Unit,
+    onFinishOnboarding: () -> Unit,
+    onToggleSound: (Boolean) -> Unit,
+    onToggleHaptics: (Boolean) -> Unit
 ) {
     val gameState by gameLogic.gameState.collectAsState()
     val scope = rememberCoroutineScope()
@@ -68,7 +81,14 @@ fun GameScreen(
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
     val coreScale = remember { Animatable(1f) }
 
-    // ~60fps frame loop drives all animation + particle/ring physics
+    var showOnboarding by remember { mutableStateOf(startOnboarding) }
+    var showSettings by remember { mutableStateOf(false) }
+    var showConfirmReset by remember { mutableStateOf(false) }
+    var showOffline by remember { mutableStateOf(offlineGain > 0L) }
+    var soundOn by remember { mutableStateOf(audioManager.enabled) }
+    var hapticsOn by remember { mutableStateOf(hapticManager.enabled) }
+
+    // ~60fps loop: particle/ring physics + idle income accrual
     LaunchedEffect(Unit) {
         var last = System.currentTimeMillis()
         while (true) {
@@ -78,11 +98,21 @@ fun GameScreen(
             last = now
             particles = particles.mapNotNull { it.advance(dt) }
             rings = rings.mapNotNull { it.advance(dt) }
+            gameLogic.accrue(dt / 1000.0)
             tick = now
         }
     }
 
+    // Autosave every 15s
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(15_000)
+            onSave()
+        }
+    }
+
     fun handleTap() {
+        if (showOnboarding || showSettings || showOffline || showConfirmReset) return
         val (_, breakthrough) = gameLogic.tap()
         val core = Offset(canvasSize.width / 2f, canvasSize.height * CORE_Y_FRACTION)
 
@@ -103,31 +133,25 @@ fun GameScreen(
             coreScale.snapTo(0.84f)
             coreScale.animateTo(
                 1f,
-                spring(
-                    dampingRatio = Spring.DampingRatioMediumBouncy,
-                    stiffness = Spring.StiffnessLow
-                )
+                spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow)
             )
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    Box(modifier = Modifier.fillMaxSize().background(BgColor)) {
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
                 .onSizeChanged { canvasSize = it }
-                .pointerInput(Unit) {
-                    detectTapGestures(onTap = { handleTap() })
-                }
+                .pointerInput(Unit) { detectTapGestures(onTap = { handleTap() }) }
         ) {
             val w = size.width
             val h = size.height
             val core = Offset(w / 2f, h * CORE_Y_FRACTION)
-            val frame = tick // snapshot read forces redraw each frame
+            val frame = tick
 
             drawRect(BgColor)
 
-            // Background grid (dim, anchored, gently pulsing)
             val spacing = 90f
             val cols = (w / spacing).toInt() + 1
             val rows = (h / spacing).toInt() + 1
@@ -135,11 +159,7 @@ fun GameScreen(
             for (cx in 0..cols) {
                 for (cy in 0..rows) {
                     val a = (sin(t + cx * 0.5f + cy * 0.5f) * 0.5f + 0.5f) * 0.12f
-                    drawCircle(
-                        color = CoreBlue.copy(alpha = a),
-                        radius = 1.6f,
-                        center = Offset(cx * spacing, cy * spacing)
-                    )
+                    drawCircle(CoreBlue.copy(alpha = a), radius = 1.6f, center = Offset(cx * spacing, cy * spacing))
                 }
             }
 
@@ -147,7 +167,6 @@ fun GameScreen(
             val baseR = 46f + min(gameState.level - 1, 10) * 1.5f
             val coreRadius = (baseR + pulse) * coreScale.value
 
-            // Orbiting GPU nodes (contained: orbit radius small, never clipped)
             val farm = min(gameState.upgrades["gpu_farm"]?.owned ?: 0, 16)
             if (farm > 0) {
                 val orbitR = baseR + 82f
@@ -161,36 +180,24 @@ fun GameScreen(
                 }
             }
 
-            // Expanding ring pulses
             rings.forEach { r ->
-                drawCircle(
-                    color = r.color.copy(alpha = r.alpha * 0.8f),
-                    radius = r.radius,
-                    center = core,
-                    style = Stroke(width = r.width)
-                )
+                drawCircle(r.color.copy(alpha = r.alpha * 0.8f), radius = r.radius, center = core, style = Stroke(width = r.width))
             }
 
-            // Core glow halo
             drawCircle(CoreBlue.copy(alpha = 0.10f), radius = coreRadius * 2.4f, center = core)
             drawCircle(CoreBlue.copy(alpha = 0.16f), radius = coreRadius * 1.7f, center = core)
-            // Core body
             drawCircle(CoreBlue, radius = coreRadius, center = core)
-            // Amber rim
             drawCircle(Amber.copy(alpha = 0.9f), radius = coreRadius, center = core, style = Stroke(width = 3f))
-            // Inner highlight
             drawCircle(
                 Color.White.copy(alpha = 0.85f),
                 radius = coreRadius * 0.30f,
                 center = Offset(core.x - coreRadius * 0.18f, core.y - coreRadius * 0.18f)
             )
 
-            // Particles (front)
             particles.forEach { p ->
                 drawCircle(p.color.copy(alpha = p.alpha), radius = p.radius, center = Offset(p.x, p.y))
             }
 
-            // Breakthrough surge: center-clear amber vignette, brief, low alpha (NOT a wash)
             val bt = frame - breakthroughTime
             if (breakthroughTime > 0L && bt < 600L) {
                 val k = 1f - (bt / 600f)
@@ -205,25 +212,84 @@ fun GameScreen(
 
         // HUD
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .align(Alignment.TopCenter)
-                .padding(top = 14.dp),
+            modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter).padding(top = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text("Level ${gameState.level}", color = Amber, fontSize = 30.sp, fontWeight = FontWeight.Bold)
-            Text("${formatNumber(gameState.gpu)} GPU", color = CoreBlue, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
-            Text("${gameState.workers * 10}/sec", color = Color(0xFF7A7A82), fontSize = 13.sp)
+            Text("LEVEL ${gameState.level}", color = Amber, fontSize = 30.sp, fontFamily = Rajdhani, fontWeight = FontWeight.Bold)
+            Text("${formatNumber(gameState.gpu)} GPU", color = CoreBlue, fontSize = 24.sp, fontFamily = Rajdhani, fontWeight = FontWeight.SemiBold)
+            Text("${formatNumber(gameState.incomePerSec)}/sec", color = Color(0xFF7A7A82), fontSize = 14.sp, fontFamily = Rajdhani)
+            Text("prossimo livello: ${formatNumber(gameState.levelTarget)}", color = Color(0xFF5A5A62), fontSize = 12.sp, fontFamily = Rajdhani)
+            if (gameState.prestige > 0) {
+                Text(
+                    "PRESTIGE ×${gameState.prestige}  (+${(gameState.prestige * 25)}%)",
+                    color = Green, fontSize = 13.sp, fontFamily = Rajdhani, fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+            }
+        }
+
+        // Menu button
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 16.dp, end = 16.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(Color(0x33FFFFFF))
+                .clickable { showSettings = true }
+                .padding(horizontal = 14.dp, vertical = 8.dp)
+        ) {
+            Text("MENU", color = Color.White, fontSize = 13.sp, fontFamily = Rajdhani, fontWeight = FontWeight.SemiBold)
         }
 
         UpgradesPanel(
             gameState = gameState,
             gameLogic = gameLogic,
             audioManager = audioManager,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
+            modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()
         )
+
+        if (showOffline) {
+            OfflineOverlay(gain = offlineGain) { showOffline = false }
+        }
+
+        if (showOnboarding) {
+            OnboardingOverlay {
+                showOnboarding = false
+                onFinishOnboarding()
+            }
+        }
+
+        if (showSettings) {
+            SettingsOverlay(
+                soundOn = soundOn,
+                hapticsOn = hapticsOn,
+                canPrestige = gameState.canPrestige,
+                prestige = gameState.prestige,
+                onSound = { soundOn = it; audioManager.enabled = it; onToggleSound(it) },
+                onHaptics = { hapticsOn = it; hapticManager.enabled = it; onToggleHaptics(it) },
+                onPrestige = {
+                    if (gameLogic.prestige()) {
+                        audioManager.playBreakthroughSound()
+                        onSave()
+                        showSettings = false
+                    }
+                },
+                onResetRequest = { showConfirmReset = true },
+                onClose = { showSettings = false }
+            )
+        }
+
+        if (showConfirmReset) {
+            ConfirmResetOverlay(
+                onConfirm = {
+                    gameLogic.resetAll()
+                    onSave()
+                    showConfirmReset = false
+                    showSettings = false
+                },
+                onCancel = { showConfirmReset = false }
+            )
+        }
     }
 }
 
@@ -236,22 +302,13 @@ private fun UpgradesPanel(
 ) {
     val scroll = rememberScrollState()
     Column(
-        modifier = modifier
-            .background(Color(0xFF16161A))
-            .padding(horizontal = 14.dp, vertical = 14.dp)
+        modifier = modifier.background(Panel).padding(horizontal = 14.dp, vertical = 14.dp)
     ) {
         Text(
-            "UPGRADES",
-            color = Amber,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Bold,
+            "UPGRADES", color = Amber, fontSize = 13.sp, fontFamily = Rajdhani, fontWeight = FontWeight.Bold,
             modifier = Modifier.padding(start = 4.dp, bottom = 8.dp)
         )
-        Column(
-            modifier = Modifier
-                .heightIn(max = 320.dp)
-                .verticalScroll(scroll)
-        ) {
+        Column(modifier = Modifier.heightIn(max = 300.dp).verticalScroll(scroll)) {
             gameState.upgrades.forEach { (id, up) ->
                 val cost = gameLogic.getUpgradeCost(id)
                 UpgradeRow(
@@ -289,27 +346,171 @@ private fun UpgradeRow(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column {
-                Text(
-                    name,
-                    color = if (canAfford) Color.White else Color(0xFF8A8A90),
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1
-                )
-                Text(
-                    "Posseduti: $owned",
-                    color = if (canAfford) Color(0xFFE2ECFF) else Color(0xFF6A6A70),
-                    fontSize = 12.sp,
-                    maxLines = 1
-                )
+                Text(name, color = if (canAfford) Color.White else Color(0xFF8A8A90), fontSize = 16.sp, fontFamily = Rajdhani, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                Text("posseduti: $owned", color = if (canAfford) Color(0xFFE2ECFF) else Color(0xFF6A6A70), fontSize = 12.sp, fontFamily = Rajdhani, maxLines = 1)
             }
-            Text(
-                formatNumber(cost),
-                color = if (canAfford) Color.White else Color(0xFF8A8A90),
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1
-            )
+            Text(formatNumber(cost), color = if (canAfford) Color.White else Color(0xFF8A8A90), fontSize = 16.sp, fontFamily = Rajdhani, fontWeight = FontWeight.Bold, maxLines = 1)
+        }
+    }
+}
+
+@Composable
+private fun Scrim(content: @Composable () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xCC000000))
+            .pointerInput(Unit) { detectTapGestures {} },
+        contentAlignment = Alignment.Center
+    ) { content() }
+}
+
+@Composable
+private fun PrimaryButton(text: String, enabled: Boolean = true, color: Color = CoreBlue, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (enabled) color else Color(0xFF2A2A30))
+            .clickable(enabled = enabled) { onClick() }
+            .padding(vertical = 14.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(text, color = if (enabled) Color.White else Color(0xFF6A6A70), fontSize = 16.sp, fontFamily = Rajdhani, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+private fun OnboardingOverlay(onStart: () -> Unit) {
+    Scrim {
+        Box(
+            modifier = Modifier
+                .padding(28.dp)
+                .clip(RoundedCornerShape(20.dp))
+                .background(CardBg)
+                .padding(24.dp)
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("SINGULARITY", color = Amber, fontSize = 26.sp, fontFamily = Rajdhani, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(16.dp))
+                Text("Tocca il core per generare GPU.", color = Color.White, fontSize = 15.sp, fontFamily = Rajdhani, textAlign = TextAlign.Center)
+                Spacer(Modifier.height(8.dp))
+                Text("Compra potenziamenti per moltiplicare i guadagni.", color = Color.White, fontSize = 15.sp, fontFamily = Rajdhani, textAlign = TextAlign.Center)
+                Spacer(Modifier.height(8.dp))
+                Text("I Worker Bot lavorano per te: guadagni anche da spento, fino a 2 ore.", color = Color(0xFFB8C4D8), fontSize = 14.sp, fontFamily = Rajdhani, textAlign = TextAlign.Center)
+                Spacer(Modifier.height(22.dp))
+                PrimaryButton("INIZIA", color = Amber, onClick = onStart)
+            }
+        }
+    }
+}
+
+@Composable
+private fun OfflineOverlay(gain: Long, onCollect: () -> Unit) {
+    Scrim {
+        Box(
+            modifier = Modifier
+                .padding(28.dp)
+                .clip(RoundedCornerShape(20.dp))
+                .background(CardBg)
+                .padding(24.dp)
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("BENTORNATO", color = Green, fontSize = 22.sp, fontFamily = Rajdhani, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(14.dp))
+                Text("Mentre eri via i tuoi bot hanno prodotto", color = Color(0xFFB8C4D8), fontSize = 14.sp, fontFamily = Rajdhani, textAlign = TextAlign.Center)
+                Spacer(Modifier.height(6.dp))
+                Text("+${formatNumber(gain)} GPU", color = CoreBlue, fontSize = 28.sp, fontFamily = Rajdhani, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(22.dp))
+                PrimaryButton("INCASSA", color = Green, onClick = onCollect)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsOverlay(
+    soundOn: Boolean,
+    hapticsOn: Boolean,
+    canPrestige: Boolean,
+    prestige: Int,
+    onSound: (Boolean) -> Unit,
+    onHaptics: (Boolean) -> Unit,
+    onPrestige: () -> Unit,
+    onResetRequest: () -> Unit,
+    onClose: () -> Unit
+) {
+    Scrim {
+        Box(
+            modifier = Modifier
+                .padding(24.dp)
+                .clip(RoundedCornerShape(20.dp))
+                .background(CardBg)
+                .padding(24.dp)
+        ) {
+            Column {
+                Text("OPZIONI", color = Amber, fontSize = 22.sp, fontFamily = Rajdhani, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(18.dp))
+                ToggleRow("Suono", soundOn, onSound)
+                Spacer(Modifier.height(10.dp))
+                ToggleRow("Vibrazione", hapticsOn, onHaptics)
+                Spacer(Modifier.height(20.dp))
+                Text(
+                    "RESET SINGULARITY",
+                    color = Color(0xFFB8C4D8), fontSize = 12.sp, fontFamily = Rajdhani, fontWeight = FontWeight.SemiBold
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Azzera la run, +25% guadagni permanenti. Serve 1M GPU.",
+                    color = Color(0xFF7A7A82), fontSize = 12.sp, fontFamily = Rajdhani
+                )
+                Spacer(Modifier.height(8.dp))
+                PrimaryButton(
+                    if (canPrestige) "RESET (+25%)" else "RESET BLOCCATO",
+                    enabled = canPrestige,
+                    color = Green,
+                    onClick = onPrestige
+                )
+                Spacer(Modifier.height(18.dp))
+                PrimaryButton("AZZERA PROGRESSI", color = Color(0xFF8A3030), onClick = onResetRequest)
+                Spacer(Modifier.height(10.dp))
+                PrimaryButton("CHIUDI", color = Color(0xFF33333A), onClick = onClose)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ToggleRow(label: String, value: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().width(240.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, color = Color.White, fontSize = 16.sp, fontFamily = Rajdhani)
+        Switch(checked = value, onCheckedChange = onChange)
+    }
+}
+
+@Composable
+private fun ConfirmResetOverlay(onConfirm: () -> Unit, onCancel: () -> Unit) {
+    Scrim {
+        Box(
+            modifier = Modifier
+                .padding(28.dp)
+                .clip(RoundedCornerShape(20.dp))
+                .background(CardBg)
+                .padding(24.dp)
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("SICURO?", color = Color(0xFFE06060), fontSize = 22.sp, fontFamily = Rajdhani, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(12.dp))
+                Text("Cancella tutto, prestige incluso. Non si torna indietro.", color = Color(0xFFB8C4D8), fontSize = 14.sp, fontFamily = Rajdhani, textAlign = TextAlign.Center)
+                Spacer(Modifier.height(20.dp))
+                PrimaryButton("SÌ, AZZERA", color = Color(0xFF8A3030), onClick = onConfirm)
+                Spacer(Modifier.height(10.dp))
+                PrimaryButton("ANNULLA", color = Color(0xFF33333A), onClick = onCancel)
+            }
         }
     }
 }
@@ -347,12 +548,7 @@ data class Particle(
     fun advance(dt: Float): Particle? {
         val nl = life - dt
         if (nl <= 0f) return null
-        return copy(
-            x = x + vx * dt,
-            y = y + vy * dt,
-            vy = vy + 0.0006f * dt,
-            life = nl
-        )
+        return copy(x = x + vx * dt, y = y + vy * dt, vy = vy + 0.0006f * dt, life = nl)
     }
 
     val alpha: Float get() = (life / maxLife).coerceIn(0f, 1f)
